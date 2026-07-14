@@ -1,21 +1,35 @@
-const fs = require("fs");
-const path = require("path");
+const http = require("http");
+const https = require("https");
 
 const HTTP_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+  "User-Agent": "Mozilla/5.0",
   "Accept": "application/json,text/plain,*/*"
 };
 
-function readJson(relativePath) {
-  const candidates = [
-    path.join(process.cwd(), relativePath),
-    path.join(__dirname, "..", relativePath)
-  ];
-  const found = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!found) {
-    throw new Error(`Missing data file: ${relativePath}`);
-  }
-  return JSON.parse(fs.readFileSync(found, "utf8"));
+function requestText(url, headers = HTTP_HEADERS, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    const transport = String(url).startsWith("https:") ? https : http;
+    const request = transport.get(url, { headers }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location && redirects < 5) {
+        response.resume();
+        const nextUrl = new URL(response.headers.location, url).toString();
+        requestText(nextUrl, headers, redirects + 1).then(resolve, reject);
+        return;
+      }
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`Fetch failed (${response.statusCode}) for ${url}`));
+          return;
+        }
+        resolve(body);
+      });
+    });
+    request.setTimeout(20000, () => request.destroy(new Error(`Fetch timed out for ${url}`)));
+    request.on("error", reject);
+  });
 }
 
 function pct(value) {
@@ -32,11 +46,7 @@ function normalize(value) {
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url, { headers: HTTP_HEADERS });
-  if (!response.ok) {
-    throw new Error(`Fetch failed (${response.status}) for ${url}`);
-  }
-  const text = await response.text();
+  const text = await requestText(url, HTTP_HEADERS);
   if (text.trim().startsWith("<")) {
     throw new Error(`Expected JSON but received HTML for ${url}`);
   }
@@ -44,11 +54,7 @@ async function fetchJson(url) {
 }
 
 async function fetchText(url) {
-  const response = await fetch(url, { headers: { ...HTTP_HEADERS, "Accept": "text/html,text/plain,*/*" } });
-  if (!response.ok) {
-    throw new Error(`Fetch failed (${response.status}) for ${url}`);
-  }
-  return response.text();
+  return requestText(url, { ...HTTP_HEADERS, "Accept": "text/html,text/plain,*/*" });
 }
 
 async function fetchOpenAiJson(prompt) {
@@ -203,6 +209,11 @@ function chooseBenchmark(symbol, exchange) {
   if (upper.endsWith(".NS") || exch.includes("NSE")) return "^NSEI";
   if (upper.endsWith(".BO") || exch.includes("BSE")) return "^BSESN";
   if (upper.endsWith(".HK")) return "^HSI";
+  if (upper.endsWith(".KS") || upper.endsWith(".KQ") || exch.includes("KOREA")) return "^KS11";
+  if (upper.endsWith(".T") || exch.includes("TOKYO")) return "^N225";
+  if (upper.endsWith(".AX") || exch.includes("AUSTRALIA")) return "^AXJO";
+  if (upper.endsWith(".PA") || exch.includes("PARIS")) return "^FCHI";
+  if (upper.endsWith(".DE") || exch.includes("GERMANY")) return "^GDAXI";
   if (upper.endsWith(".L")) return "^FTSE";
   if (upper.endsWith(".TO") || exch.includes("TORONTO")) return "XIU.TO";
   return "SPY";
@@ -211,7 +222,8 @@ function chooseBenchmark(symbol, exchange) {
 async function resolveTicker(query) {
   const raw = String(query || "").trim();
   const normalizedQuery = normalize(raw);
-  if (/^[^^\s]+\.[a-z]{1,4}$/i.test(raw) || raw.startsWith("^")) {
+  const isQualifiedSymbol = /^[^^\s]+\.[a-z]{1,4}$/i.test(raw);
+  if (raw.startsWith("^")) {
     return {
       symbol: raw.toUpperCase(),
       quoteType: "EQUITY",
@@ -222,11 +234,20 @@ async function resolveTicker(query) {
   }
 
   try {
-    return await resolveTickerWithNasdaq(raw);
+    return await resolveTickerWithYahoo(raw, normalizedQuery);
   } catch (error) {
     try {
-      return await resolveTickerWithYahoo(raw, normalizedQuery);
+      return await resolveTickerWithNasdaq(raw);
     } catch (secondError) {
+      if (isQualifiedSymbol) {
+        return {
+          symbol: raw.toUpperCase(),
+          quoteType: "EQUITY",
+          shortname: raw.toUpperCase(),
+          longname: raw.toUpperCase(),
+          exchDisp: "Yahoo"
+        };
+      }
       if (/^[a-z0-9-]{1,8}$/i.test(raw) && !raw.includes(" ")) {
         return {
           symbol: raw.toUpperCase(),
@@ -241,10 +262,23 @@ async function resolveTicker(query) {
   }
 }
 
+async function fetchYahooSearchQuotes(query) {
+  const hosts = ["query2.finance.yahoo.com", "query1.finance.yahoo.com"];
+  let lastError = null;
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=20&newsCount=0`;
+      const data = await fetchJson(url);
+      if (Array.isArray(data.quotes)) return data.quotes;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`Yahoo search returned no results for ${query}.`);
+}
+
 async function resolveTickerWithYahoo(query, normalizedQuery = normalize(query)) {
-  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0`;
-  const data = await fetchJson(url);
-  const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+  const quotes = await fetchYahooSearchQuotes(query);
   const candidates = quotes
     .filter((quote) => ["EQUITY", "ETF"].includes(quote.quoteType))
     .sort((a, b) => {
@@ -277,8 +311,19 @@ async function resolveTickerWithNasdaq(query) {
 }
 
 async function fetchYahooPrices(symbol, range = "5y") {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${encodeURIComponent(range)}&interval=1d&events=div%2Csplits`;
-  const data = await fetchJson(url);
+  const hosts = ["query2.finance.yahoo.com", "query1.finance.yahoo.com"];
+  let data = null;
+  let lastError = null;
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?range=${encodeURIComponent(range)}&interval=1d&events=div%2Csplits`;
+      data = await fetchJson(url);
+      if (data?.chart?.result?.[0]?.timestamp?.length) break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!data) throw lastError || new Error(`No Yahoo price response returned for ${symbol}.`);
   const result = data.chart?.result?.[0];
   if (!result?.timestamp?.length) {
     throw new Error(`No Yahoo price history returned for ${symbol}.`);
@@ -410,14 +455,37 @@ async function fetchMacrotrendsQuarterlyEps(symbol, companyName) {
   }));
 }
 
+async function fetchYahooQuarterlyEps(symbol) {
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - (10 * 365 * 86400);
+  const types = "quarterlyDilutedEPS,quarterlyBasicEPS";
+  const url = `https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/${encodeURIComponent(symbol)}?symbol=${encodeURIComponent(symbol)}&type=${types}&period1=${start}&period2=${end}`;
+  const data = await fetchJson(url);
+  const series = Array.isArray(data.timeseries?.result) ? data.timeseries.result : [];
+  const preferred = series.find((item) => Array.isArray(item.quarterlyDilutedEPS)) ||
+    series.find((item) => Array.isArray(item.quarterlyBasicEPS));
+  const rows = preferred?.quarterlyDilutedEPS || preferred?.quarterlyBasicEPS || [];
+  return rows.map((row) => ({
+    source: "Yahoo Finance global quarterly fundamentals",
+    fiscalQuarterEnd: row.asOfDate,
+    reportedDate: addDays(row.asOfDate, 30),
+    reportedEPS: Number(row.reportedValue?.raw),
+    estimatedEPS: null,
+    surprisePercentage: null,
+    transcriptUrl: null,
+    dateConfidence: "fiscal-period-proxy"
+  })).filter((row) => row.fiscalQuarterEnd && Number.isFinite(row.reportedEPS));
+}
+
 async function fetchLiveEarningsHistory(symbol, quote) {
-  const [marketBeat, nasdaq, macrotrends] = await Promise.all([
+  const [marketBeat, nasdaq, macrotrends, yahooGlobal] = await Promise.all([
     fetchMarketBeatEarnings(symbol, quote.exchDisp || quote.exchange).catch(() => []),
     fetchNasdaqEarnings(symbol).catch(() => []),
-    fetchMacrotrendsQuarterlyEps(symbol, quote.longname || quote.shortname || symbol).catch(() => [])
+    fetchMacrotrendsQuarterlyEps(symbol, quote.longname || quote.shortname || symbol).catch(() => []),
+    fetchYahooQuarterlyEps(symbol).catch(() => [])
   ]);
   const merged = new Map();
-  [...macrotrends, ...nasdaq.map((row) => ({ ...row, source: "Nasdaq earnings surprise", dateConfidence: "reported" })), ...marketBeat]
+  [...yahooGlobal, ...macrotrends, ...nasdaq.map((row) => ({ ...row, source: "Nasdaq earnings surprise", dateConfidence: "reported" })), ...marketBeat]
     .forEach((row) => {
       const key = row.fiscalQuarterEnd || row.reportedDate;
       if (!key || !row.reportedDate) return;
@@ -439,6 +507,60 @@ async function fetchLiveEarningsHistory(symbol, quote) {
       return deduped;
     }, [])
     .sort((a, b) => new Date(a.reportedDate) - new Date(b.reportedDate));
+}
+
+function issuerCoreName(value) {
+  return normalize(value)
+    .replace(/\b(american depositary shares?|american depositary receipts?|depositary shares?|depositary receipts?|ads|adr|ordinary shares?|common stock|class [a-z]|incorporated|corporation|corp|company|co|plc|limited|ltd)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sameIssuer(left, right) {
+  const a = issuerCoreName(left);
+  const b = issuerCoreName(right);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+async function discoverIssuerListings(quote) {
+  const companyName = quote.longname || quote.shortname || quote.symbol;
+  const quotes = await fetchYahooSearchQuotes(issuerCoreName(companyName) || companyName);
+  return quotes
+    .filter((candidate) => candidate.quoteType === "EQUITY" && candidate.symbol && candidate.symbol !== quote.symbol)
+    .filter((candidate) => sameIssuer(companyName, candidate.longname || candidate.shortname || candidate.symbol))
+    .sort((a, b) => {
+      const aPrimary = /\.(KS|KQ|HK|T|L|PA|DE|AX|NS|BO|TO)$/i.test(a.symbol) ? 1 : 0;
+      const bPrimary = /\.(KS|KQ|HK|T|L|PA|DE|AX|NS|BO|TO)$/i.test(b.symbol) ? 1 : 0;
+      if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+      const aNew = a.newListingDate ? 1 : 0;
+      const bNew = b.newListingDate ? 1 : 0;
+      if (aNew !== bNew) return aNew - bNew;
+      return Number(b.score || 0) - Number(a.score || 0);
+    })
+    .slice(0, 5);
+}
+
+async function loadListingCoverage(quote) {
+  const [earnings, prices] = await Promise.all([
+    fetchLiveEarningsHistory(quote.symbol, quote).catch(() => []),
+    fetchPriceHistory(quote.symbol, "5y").catch(() => [])
+  ]);
+  return { quote, earnings, prices };
+}
+
+async function selectResearchListing(requestedQuote) {
+  const requested = await loadListingCoverage(requestedQuote);
+  if (requested.earnings.length >= 2 && requested.prices.length >= 60) return requested;
+
+  const alternatives = await discoverIssuerListings(requestedQuote).catch(() => []);
+  const coverage = await Promise.all(alternatives.map((quote) => loadListingCoverage(quote)));
+  return [requested, ...coverage].sort((a, b) => {
+    const aScore = Math.min(a.earnings.length, 8) * 1000 + Math.min(a.prices.length, 1000);
+    const bScore = Math.min(b.earnings.length, 8) * 1000 + Math.min(b.prices.length, 1000);
+    return bScore - aScore;
+  })[0];
 }
 
 async function fetchStockAnalysisTranscriptIndex(symbol) {
@@ -992,16 +1114,18 @@ function summarizeCompany(events) {
 }
 
 async function buildLiveAnalysis(query) {
-  const quote = await resolveTicker(query);
+  const requestedQuote = await resolveTicker(query);
+  const researchCoverage = await selectResearchListing(requestedQuote);
+  const quote = researchCoverage.quote;
   const symbol = quote.symbol;
+  const requestedSymbol = requestedQuote.symbol;
   const benchmarkSymbol = chooseBenchmark(symbol, quote.exchDisp || quote.exchange);
-  const earnings = await fetchLiveEarningsHistory(symbol, quote);
+  const earnings = researchCoverage.earnings;
   const availableEventCount = earnings.length;
   const analysisEarnings = availableEventCount > 8 ? earnings.slice(-8) : earnings;
-  const analysisStartDate = analysisEarnings[0]?.reportedDate ? addDays(analysisEarnings[0].reportedDate, -10) : null;
-  const [prices, benchmarkPrices, transcriptCandidates] = await Promise.all([
-    fetchPriceHistory(symbol, "5y", analysisStartDate),
-    fetchPriceHistory(benchmarkSymbol, "5y", analysisStartDate).catch(() => []),
+  const prices = researchCoverage.prices;
+  const [benchmarkPrices, transcriptCandidates] = await Promise.all([
+    fetchPriceHistory(benchmarkSymbol, "5y").catch(() => []),
     fetchTranscriptCandidates(symbol, quote, analysisEarnings).catch(() => [])
   ]);
   const benchmarkByDate = benchmarkPrices;
@@ -1031,8 +1155,8 @@ async function buildLiveAnalysis(query) {
       `Earnings date source: ${earning.source || "public earnings provider"}${earning.dateConfidence === "fiscal-period-proxy" ? " (fiscal-period proxy, not confirmed call date)" : ""}.`
     ];
     return {
-      company: symbol.toLowerCase(),
-      display_name: quote.longname || quote.shortname || symbol,
+      company: requestedSymbol.toLowerCase(),
+      display_name: requestedQuote.longname || requestedQuote.shortname || requestedSymbol,
       quarter: earning.fiscalQuarterEnd || `Event ${index + 1}`,
       call_date: earning.reportedDate,
       transcript_url: transcriptDriver?.transcript_url || earning.transcriptUrl || `https://www.google.com/search?q=${encodeURIComponent(`${quote.longname || symbol} ${earning.fiscalQuarterEnd || ""} earnings call transcript`)}`,
@@ -1087,23 +1211,30 @@ async function buildLiveAnalysis(query) {
     dataWarnings.push(`Found ${availableEventCount} available earnings events; analysis uses the latest ${events.length} quarters to prioritize predictive relevance and chart readability.`);
   }
   if (!events.length) {
-    dataWarnings.push("Price data was found, but earnings-call/result dates were not available from the public providers for this symbol.");
+    dataWarnings.push("The company and live price series were found, but no completed earnings-call event could be matched to the available trading history.");
   }
   if (events.some((event) => event.date_confidence === "fiscal-period-proxy")) {
     dataWarnings.push("Older events may use fiscal quarter-end plus an estimated reporting lag because public reported-date history was unavailable.");
   }
+  if (symbol !== requestedSymbol) {
+    dataWarnings.unshift(`The searched security ${requestedSymbol} has insufficient trading or earnings history. Event-study history uses the same issuer's primary listing ${symbol} as a disclosed price proxy.`);
+  }
 
   const company = {
-    key: symbol.toLowerCase(),
+    key: requestedSymbol.toLowerCase(),
     live: true,
-    displayName: quote.longname || quote.shortname || symbol,
-    ticker: `${quote.exchDisp || quote.exchange || "Yahoo"}: ${symbol}`,
-    aliases: [symbol, quote.shortname, quote.longname].filter(Boolean),
+    displayName: requestedQuote.longname || requestedQuote.shortname || requestedSymbol,
+    ticker: `${requestedQuote.exchDisp || requestedQuote.exchange || "Yahoo"}: ${requestedSymbol}`,
+    aliases: [requestedSymbol, requestedQuote.shortname, requestedQuote.longname].filter(Boolean),
     events,
     availableEventCount,
     analysisEventCount: events.length,
     analysisWindow: availableEventCount > 8 ? "latest-8-quarters" : "all-available",
     prices,
+    requestedSymbol,
+    researchSymbol: symbol,
+    researchExchange: quote.exchDisp || quote.exchange || "Yahoo",
+    usesIssuerPriceProxy: symbol !== requestedSymbol,
     benchmarkSymbol,
     dataWarnings,
     attributionMode: aiDerivedCount ? "ai-transcript" : (transcriptDerivedCount ? "preliminary-transcript-events" : "price-only"),
@@ -1112,169 +1243,42 @@ async function buildLiveAnalysis(query) {
 
   return {
     ok: true,
-    supported: Boolean(events.length),
+    supported: true,
+    analysisAvailable: Boolean(events.length),
     live: true,
     query,
     company,
     methodology: {
-      priceSource: "Live Yahoo Finance chart API, with Nasdaq historical prices as fallback for U.S.-listed symbols.",
+      priceSource: `Live Yahoo Finance chart API, with Nasdaq fallback. Research price symbol: ${symbol}.`,
       benchmark: `${benchmarkSymbol} is used as the market proxy for expected return.`,
       eventWindow: "1D, 3D and 5D realized returns are calculated from the pre-event close and compared with benchmark return over the same window.",
-      qualitativeAttribution: "For live symbols, reported earnings dates are collected from MarketBeat/Nasdaq when available. Older history may be extended with Macrotrends quarterly EPS as a fiscal-period proxy; direct transcript parsing still requires a licensed or official transcript provider.",
+      qualitativeAttribution: "Every search queries live public market, earnings and transcript sources. Reported earnings dates are preferred; fiscal-period proxies are disclosed when exact call dates are unavailable. A business driver is assigned only when a matching public transcript can be parsed.",
       displayMetrics: ["realized_5d", "expected_5d", "abnormal_5d"].map((metric) => ({ metric, unit: metric.includes("abnormal") ? "percentage points" : "percent" }))
     }
   };
-}
-
-function buildPayload() {
-  const rows = readJson("exports/earnings_call_analysis/earnings_call_event_study.json");
-  const manifest = readJson("data/earnings_calls/transcript_manifest.json");
-
-  const companies = {
-    eternal: {
-      key: "eternal",
-      displayName: "Eternal (Zomato/Blinkit)",
-      ticker: "NSE: ETERNAL",
-      aliases: ["eternal", "zomato", "blinkit", "zomato ltd", "eternal ltd", "nse:eternal", "zomato stock"]
-    },
-    swiggy: {
-      key: "swiggy",
-      displayName: "Swiggy / Instamart",
-      ticker: "NSE: SWIGGY",
-      aliases: ["swiggy", "instamart", "swiggy ltd", "nse:swiggy", "swiggy stock"]
-    }
-  };
-
-  Object.values(companies).forEach((company) => {
-    const allEvents = rows
-      .filter((row) => row.company === company.key)
-      .sort((a, b) => new Date(a.call_date) - new Date(b.call_date));
-    const availableEventCount = allEvents.length;
-    const events = availableEventCount > 8 ? allEvents.slice(-8) : allEvents;
-    const positives = events.filter((event) => Number(event.abnormal_5d) > 0);
-    const negatives = events.filter((event) => Number(event.abnormal_5d) < 0);
-    const avgAbnormal = events.reduce((sum, event) => sum + Number(event.abnormal_5d || 0), 0) / Math.max(1, events.length);
-    const strongestPositive = events.reduce((best, event) => (
-      !best || Number(event.abnormal_5d) > Number(best.abnormal_5d) ? event : best
-    ), null);
-    const strongestNegative = events.reduce((best, event) => (
-      !best || Number(event.abnormal_5d) < Number(best.abnormal_5d) ? event : best
-    ), null);
-
-    company.events = events;
-    company.events.forEach((event) => {
-      event.attribution_source = "transcript-derived";
-    });
-    company.availableEventCount = availableEventCount;
-    company.analysisEventCount = events.length;
-    company.analysisWindow = availableEventCount > 8 ? "latest-8-quarters" : "all-available";
-    company.dataWarnings = availableEventCount > events.length
-      ? [`Found ${availableEventCount} available earnings events; analysis uses the latest ${events.length} quarters to prioritize predictive relevance and chart readability.`]
-      : [];
-    company.attributionMode = "transcript-derived";
-    company.transcripts = manifest[company.key] || [];
-    company.summary = {
-      eventCount: events.length,
-      positiveCount: positives.length,
-      negativeCount: negatives.length,
-      averageAbnormal5d: avgAbnormal,
-      averageAbnormal5dLabel: ppt(avgAbnormal),
-      strongestPositive: strongestPositive ? {
-        quarter: strongestPositive.quarter,
-        abnormal5d: strongestPositive.abnormal_5d,
-        label: ppt(strongestPositive.abnormal_5d),
-        headline: strongestPositive.headline
-      } : null,
-      strongestNegative: strongestNegative ? {
-        quarter: strongestNegative.quarter,
-        abnormal5d: strongestNegative.abnormal_5d,
-        label: ppt(strongestNegative.abnormal_5d),
-        headline: strongestNegative.headline
-      } : null,
-      latestCall: events[events.length - 1] || null
-    };
-  });
-
-  return {
-    generatedAt: new Date().toISOString(),
-    supportedCompanies: Object.values(companies).map((company) => ({
-      key: company.key,
-      displayName: company.displayName,
-      ticker: company.ticker,
-      aliases: company.aliases
-    })),
-    methodology: {
-      priceSource: "Local StockAnalysis daily price snapshots from the original report workflow.",
-      benchmark: "NSE NIFTYBEES is used as the market proxy for expected return.",
-      eventWindow: "1D, 3D and 5D realized returns are calculated from the pre-call close and compared with benchmark return over the same window.",
-      qualitativeAttribution: "Driver summaries are analyst attributions based on official earnings-call transcripts and should not be read as proof of single-cause price formation.",
-      displayMetrics: ["realized_5d", "expected_5d", "abnormal_5d"].map((metric) => ({ metric, unit: metric.includes("abnormal") ? "percentage points" : "percent" }))
-    },
-    companies
-  };
-}
-
-function findCompany(payload, query) {
-  const normalized = normalize(query);
-  if (!normalized) return null;
-  return Object.values(payload.companies).find((company) => {
-    return normalize(company.key) === normalized ||
-      normalize(company.displayName).includes(normalized) ||
-      normalize(company.ticker).includes(normalized) ||
-      company.aliases.some((alias) => normalize(alias) === normalized || normalize(alias).includes(normalized));
-  });
 }
 
 module.exports = async function handler(req, res) {
   try {
-    const payload = buildPayload();
     const query = req.query?.q || req.query?.ticker || req.query?.company || "";
-    const company = findCompany(payload, query);
-
-    res.setHeader("Cache-Control", query ? "no-store" : "s-maxage=300, stale-while-revalidate=86400");
+    res.setHeader("Cache-Control", "no-store");
     res.setHeader("Access-Control-Allow-Origin", "*");
+    if (!query.trim()) return res.status(200).json({ ok: true, live: true, supported: false, query: "" });
 
-    if (query && !company) {
-      try {
-        const liveResult = await buildLiveAnalysis(query);
-        return res.status(200).json({
-          ...liveResult,
-          supportedCompanies: payload.supportedCompanies
-        });
-      } catch (liveError) {
-        return res.status(200).json({
-          ok: true,
-          supported: false,
-          live: true,
-          query,
-          message: liveError.message,
-          nextProviderSteps: [
-            "Check that the stock name or ticker is spelled correctly.",
-            "Try the exchange-qualified Yahoo symbol, such as AAPL, MSFT, 0700.HK, RELIANCE.NS, or 9988.HK.",
-            "If earnings-call transcript text is required, connect a transcript provider such as official IR pages, AlphaSense, FactSet, Seeking Alpha, or a company-filings scraper."
-          ],
-          supportedCompanies: payload.supportedCompanies,
-          methodology: payload.methodology
-        });
-      }
-    }
-
-    return res.status(200).json({
-      ok: true,
-      supported: Boolean(company),
-      query,
-      company: company || null,
-      supportedCompanies: payload.supportedCompanies,
-      methodology: payload.methodology
-    });
+    const liveResult = await buildLiveAnalysis(query);
+    return res.status(200).json(liveResult);
   } catch (error) {
-    return res.status(500).json({
+    return res.status(200).json({
       ok: false,
-      error: error.message
+      supported: false,
+      live: true,
+      query: req.query?.q || req.query?.ticker || req.query?.company || "",
+      message: error.message,
+      errorCode: "LIVE_SEARCH_FAILED"
     });
   }
 };
 
-module.exports._buildPayload = buildPayload;
 module.exports._buildLiveAnalysis = buildLiveAnalysis;
+module.exports._liveProviders = { resolveTicker, discoverIssuerListings, loadListingCoverage, selectResearchListing, fetchYahooPrices, fetchYahooQuarterlyEps };
 module.exports._format = { pct, ppt };

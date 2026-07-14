@@ -2,7 +2,6 @@ const API_URL = window.location.protocol === "file:"
   ? "http://localhost:4173/api/earnings-call-analysis"
   : "api/earnings-call-analysis";
 
-let seed = window.EARNINGS_CALL_SEED || null;
 let currentResult = null;
 let currentPrices = [];
 let currentTimelineHits = [];
@@ -43,10 +42,6 @@ function normalize(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function companyList(data = seed) {
-  return Object.entries(data?.companies || {}).map(([key, company]) => ({ key, ...company }));
-}
-
 function buildSummary(company) {
   const events = company.events || [];
   const positives = events.filter((event) => Number(event.abnormal_5d) > 0);
@@ -69,38 +64,21 @@ function buildSummary(company) {
   };
 }
 
-function findCompany(data, query) {
-  const q = normalize(query);
-  if (!q) return null;
-  return companyList(data).find((company) => {
-    const aliases = company.aliases || [];
-    return normalize(company.key) === q ||
-      normalize(company.displayName).includes(q) ||
-      normalize(company.ticker).includes(q) ||
-      aliases.some((alias) => normalize(alias) === q || normalize(alias).includes(q));
-  });
-}
-
 async function getAnalysis(query) {
   try {
     const response = await fetch(`${API_URL}?q=${encodeURIComponent(query)}&_=${Date.now()}`, { cache: "no-store" });
-    if (response.ok) {
-      const data = await response.json();
-      if (data.ok) return data;
-    }
+    const data = await response.json();
+    if (response.ok) return data;
+    return { ok: false, supported: false, live: true, query, message: data.message || data.error || `Live search failed with HTTP ${response.status}.` };
   } catch (error) {
-    // Local file:// previews cannot call the API; fall back to the embedded seed.
+    return {
+      ok: false,
+      supported: false,
+      live: true,
+      query,
+      message: "The live search service could not be reached. Run the application server and try again."
+    };
   }
-
-  const company = findCompany(seed, query);
-  return {
-    ok: true,
-    supported: Boolean(company),
-    query,
-    company,
-    supportedCompanies: companyList(seed).map(({ key, displayName, ticker, aliases }) => ({ key, displayName, ticker, aliases })),
-    methodology: seed?.methodology || {}
-  };
 }
 
 async function getPriceSeries(company) {
@@ -251,7 +229,7 @@ function drawPriceTimeline(canvas, prices, events) {
   if (!prices.length) {
     ctx.fillStyle = "#64748b";
     ctx.font = "14px Arial";
-    ctx.fillText("No local price series available for this stock yet.", 24, 42);
+    ctx.fillText("No live price series was returned for this stock.", 24, 42);
     return;
   }
 
@@ -510,18 +488,55 @@ function renderEvent(event) {
 }
 
 function renderUnsupported(result) {
-  const supported = (result.supportedCompanies || []).map((company) => company.displayName).join(", ");
   $("analysis-root").innerHTML = `
     <section class="card unsupported">
-      <h3>No complete live event-study result for "${escapeHtml(result.query)}" yet</h3>
-      <p>${escapeHtml(result.message || "The live data providers did not return enough price and earnings-call data for this symbol.")}</p>
-      <p>Local curated coverage is still available for: ${escapeHtml(supported)}.</p>
-      <p>Try one of these next steps:</p>
+      <h3>Live search could not resolve "${escapeHtml(result.query)}"</h3>
+      <p>${escapeHtml(result.message || "The live market and issuer sources did not return a listed security for this search.")}</p>
+      <p>Try:</p>
       <ol>
-        ${(result.nextProviderSteps || []).map((step) => `<li>${escapeHtml(step)}</li>`).join("")}
+        <li>Check the company name or ticker spelling.</li>
+        <li>Use an exchange-qualified ticker such as 0700.HK, 000660.KS, RELIANCE.NS or AIR.PA.</li>
+        <li>Retry if a public market-data provider is temporarily rate-limited.</li>
       </ol>
     </section>
   `;
+}
+
+function renderCompanyWithoutCalls(result) {
+  const company = result.company;
+  const prices = currentPrices || [];
+  const warnings = company.dataWarnings || [];
+  $("analysis-root").innerHTML = `
+    <section class="analysis-header">
+      <h2>${escapeHtml(company.displayName)}</h2>
+      <p>${escapeHtml(company.ticker)} | Live company and market data found</p>
+      <div class="summary-grid">
+        <div class="metric"><span>Completed calls found</span><strong>0</strong></div>
+        <div class="metric"><span>Price observations</span><strong>${prices.length}</strong></div>
+        <div class="metric"><span>Requested symbol</span><strong>${escapeHtml(company.requestedSymbol || company.key.toUpperCase())}</strong></div>
+        <div class="metric"><span>Research symbol</span><strong>${escapeHtml(company.researchSymbol || company.key.toUpperCase())}</strong></div>
+      </div>
+    </section>
+
+    ${warnings.length ? `
+      <section class="notice warning">
+        <strong>Live data note.</strong>
+        <span>${warnings.map(escapeHtml).join(" ")}</span>
+      </section>
+    ` : ""}
+
+    <section class="card">
+      <div class="section-title-row">
+        <h3>Live Price Timeline</h3>
+        <span>${escapeHtml(fmtDate(prices[0]?.date))} - ${escapeHtml(fmtDate(prices[prices.length - 1]?.date))}</span>
+      </div>
+      <canvas id="price-timeline"></canvas>
+      <div class="annotation-note">
+        The security was resolved online. Earnings-call analysis will appear when completed call dates can be matched to trading history.
+      </div>
+    </section>
+  `;
+  requestAnimationFrame(() => drawPriceTimeline($("price-timeline"), prices, []));
 }
 
 function renderCompany(result) {
@@ -614,13 +629,18 @@ async function runSearch(query) {
   }
   setStatus("Generating.", `Running earnings-call analysis for ${q}...`);
   const result = await getAnalysis(q);
-  if (!result.supported) {
-    setStatus("Provider required.", "This stock is not in the local earnings-call dataset yet.");
+  if (!result.ok || !result.company) {
+    setStatus("Live search failed.", result.message || "No listed security could be resolved from live sources.");
     renderUnsupported(result);
     return;
   }
   currentResult = result;
   currentPrices = await getPriceSeries(result.company);
+  if (!(result.company.events || []).length) {
+    setStatus("Company found.", `Found live market data for ${result.company.displayName}; no completed earnings-call event could be matched yet.`);
+    renderCompanyWithoutCalls(result);
+    return;
+  }
   setStatus("Analysis ready.", `Generated event-study analysis for ${result.company.displayName}.`);
   renderCompany(result);
 }
