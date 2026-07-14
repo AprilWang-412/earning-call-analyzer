@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/earnings_call_analyzer.html"
+    }
+  ]
+}
