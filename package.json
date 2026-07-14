@@ -1,0 +1,13 @@
+{
+  "name": "earning-call-analyzer",
+  "version": "1.0.0",
+  "description": "Search-driven earnings call event analysis and stock return attribution",
+  "main": "local_server.js",
+  "scripts": {
+    "dev": "node local_server.js",
+    "start": "node local_server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

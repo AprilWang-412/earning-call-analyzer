@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Earnings Call Analyzer</title>
+    <link rel="stylesheet" href="earnings_call_analyzer.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <h1>Earnings Call Analyzer</h1>
+      <p class="subtitle">
+        Search a stock code or company name to generate an earnings-call analysis report
+      </p>
+      <form class="search-panel" id="search-form">
+        <input
+          id="stock-query"
+          type="search"
+          placeholder="Search"
+          autocomplete="off"
+        />
+        <button type="submit" aria-label="Search and generate analysis">Search</button>
+      </form>
+    </header>
+
+    <main class="page">
+      <section class="notice" id="status-box" hidden>
+        <strong>Ready.</strong>
+        <span>Search by ticker or company name. Current local dataset covers the stocks already collected for this report workflow.</span>
+      </section>
+
+      <section id="analysis-root"></section>
+    </main>
+
+    <script src="data/earnings_calls/earnings_call_seed.js"></script>
+    <script src="earnings_call_analyzer.js"></script>
+  </body>
+</html>
