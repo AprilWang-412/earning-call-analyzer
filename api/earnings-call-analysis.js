@@ -714,6 +714,12 @@ function cleanCatalystSentence(sentence) {
     .trim();
 }
 
+function isWeakCatalyst(value) {
+  const text = cleanCatalystSentence(value).replace(/[^a-z0-9%$]+/gi, " ").trim();
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length < 4 || /^(however|therefore|moreover|additionally|meanwhile|nevertheless|nonetheless|in conclusion)$/i.test(text);
+}
+
 function shortenCatalyst(sentence, maxLength = 120) {
   const cleaned = cleanCatalystSentence(sentence);
   if (cleaned.length <= maxLength) return cleaned;
@@ -738,7 +744,8 @@ function finishChartLabel(value, maxLength = 72) {
 }
 
 function chartDriverLabel(catalyst, evidenceSentence = "") {
-  const source = cleanCatalystSentence(evidenceSentence || catalyst);
+  const source = cleanCatalystSentence(evidenceSentence || catalyst)
+    .replace(/^(?:however|therefore|moreover|additionally|meanwhile|nevertheless|nonetheless)[,:]?\s*/i, "");
   let context = "";
   let body = source;
   const contextMatch = source.match(/^In (?:(?:our|the company's)\s+)?([^,]{2,48}),\s*(.+)$/i);
@@ -794,6 +801,11 @@ function chartDriverLabel(catalyst, evidenceSentence = "") {
 
   const marginPressure = source.match(/margin compression (?:from|due to)\s+([^.;]+)/i);
   if (marginPressure) return finishChartLabel(`Margin pressure came from ${marginPressure[1]}`);
+
+  const impactedOutlook = body.match(/(?:management\s+(?:do\s+)?expect\w*|we\s+(?:do\s+)?expect\w*)\s+(.+?)\s+to be impacted by\s+([^.;]+)/i);
+  if (impactedOutlook) {
+    return finishChartLabel(`${impactedOutlook[1]} outlook pressured by ${impactedOutlook[2]}`);
+  }
 
   const guidance = body.match(/(?:we|management)\s+expect\w*\s+(.+?)\s+to be\s+(.+?)(?:,|\.| driven by|$)/i);
   if (guidance) {
@@ -1030,6 +1042,7 @@ async function buildTranscriptDriver(earning, abnormal5d, transcript) {
   const catalyst = concreteCatalyst(evidence, abnormal5d);
   const aiDriver = await buildAiTranscriptDriver({ earning, abnormal5d, evidence, fallbackCatalyst: catalyst });
   const finalCatalyst = (aiDriver?.driver || catalyst).replace(/[.]+$/, "");
+  if (isWeakCatalyst(finalCatalyst)) return null;
   const category = catalystCategory(catalyst);
   const primary = selected[0];
   const label = chartDriverLabel(finalCatalyst, primary.sentence);

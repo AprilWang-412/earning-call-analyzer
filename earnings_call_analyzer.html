@@ -8,23 +8,30 @@
   </head>
   <body>
     <header class="hero">
-      <h1>Earnings Call Analyzer</h1>
-      <p class="subtitle">
-        Search a stock code or company name to generate an earnings-call analysis report
-      </p>
-      <form class="search-panel" id="search-form">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">EC</span>
+        <div>
+          <h1>Earnings Call Analyzer</h1>
+          <p class="subtitle">
+            Search a stock code or company name to generate an earnings-call analysis report
+          </p>
+        </div>
+      </div>
+      <form class="search-panel" id="search-form" role="search">
         <input
           id="stock-query"
           type="search"
           placeholder="Search"
+          aria-label="Search"
           autocomplete="off"
+          spellcheck="false"
         />
-        <button type="submit" aria-label="Search and generate analysis">Search</button>
+        <button id="search-button" type="submit" aria-label="Search and generate analysis">Search</button>
       </form>
     </header>
 
     <main class="page">
-      <section class="notice" id="status-box" hidden>
+      <section class="notice" id="status-box" aria-live="polite" hidden>
         <strong>Ready.</strong>
         <span>Search by ticker or company name.</span>
       </section>

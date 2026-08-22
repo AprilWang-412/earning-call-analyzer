@@ -38,6 +38,12 @@ function fmtDate(value) {
   return date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+function fmtCompanyName(value) {
+  return String(value || "")
+    .replace(/\s+(?:common stock|ordinary shares?|american depositary shares?|class [a-z](?: common stock)?)\.?$/i, "")
+    .trim();
+}
+
 function normalize(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -82,18 +88,10 @@ async function getAnalysis(query) {
 }
 
 async function getPriceSeries(company) {
-  if (!company?.key) return [];
   if (Array.isArray(company.prices) && company.prices.length) {
     return normalizePrices(company.prices, company.events || []);
   }
-  try {
-    const response = await fetch(`data/earnings_calls/${company.key}_prices.json`);
-    if (!response.ok) return [];
-    const payload = await response.json();
-    return normalizePrices(payload.data || [], company.events || []);
-  } catch (error) {
-    return [];
-  }
+  return [];
 }
 
 function normalizePrices(rows, events) {
@@ -114,6 +112,40 @@ function setStatus(kind, message) {
   const box = $("status-box");
   box.hidden = false;
   box.innerHTML = `<strong>${escapeHtml(kind)}</strong> <span>${escapeHtml(message)}</span>`;
+}
+
+function setBusy(isBusy) {
+  const button = $("search-button");
+  const input = $("stock-query");
+  button.disabled = isBusy;
+  button.textContent = isBusy ? "Analyzing" : "Search";
+  input.setAttribute("aria-busy", String(isBusy));
+}
+
+function renderLoading(query) {
+  $("analysis-root").innerHTML = `
+    <section class="analysis-loading" aria-busy="true">
+      <div class="loading-head">
+        <span class="loading-dot" aria-hidden="true"></span>
+        <span>Building the live report for ${escapeHtml(query)}</span>
+      </div>
+      <div class="loading-steps" aria-hidden="true">
+        <span>Resolving security</span>
+        <span>Fetching event-window prices</span>
+        <span>Matching call evidence</span>
+      </div>
+    </section>
+  `;
+}
+
+function renderDataQuality(warnings, label = "Data quality and coverage") {
+  if (!warnings.length) return "";
+  return `
+    <details class="data-quality">
+      <summary>${escapeHtml(label)} · ${warnings.length} ${warnings.length === 1 ? "note" : "notes"}</summary>
+      <p>${warnings.map(escapeHtml).join(" ")}</p>
+    </details>
+  `;
 }
 
 function drawBars(canvas, events, mode) {
@@ -145,10 +177,10 @@ function drawBars(canvas, events, mode) {
     return margin.top + (max - value) / (max - min) * plotH;
   }
 
-  ctx.strokeStyle = "#dbe3ef";
+  ctx.strokeStyle = "#e6e9ed";
   ctx.lineWidth = 1;
   ctx.font = "12px Arial";
-  ctx.fillStyle = "#64748b";
+  ctx.fillStyle = "#707885";
   [-0.2, -0.1, 0, 0.1, 0.2].forEach((tick) => {
     if (tick < min || tick > max) return;
     const yy = y(tick);
@@ -160,7 +192,7 @@ function drawBars(canvas, events, mode) {
   });
 
   const zero = y(0);
-  ctx.strokeStyle = "#475569";
+  ctx.strokeStyle = "#9aa1aa";
   ctx.beginPath();
   ctx.moveTo(margin.left, zero);
   ctx.lineTo(width - margin.right, zero);
@@ -171,8 +203,8 @@ function drawBars(canvas, events, mode) {
     const center = margin.left + index * groupW + groupW / 2;
     if (mode === "realizedExpected") {
       [
-        { value: Number(event.realized_5d), color: "#1d4ed8", x: center - 12 },
-        { value: Number(event.expected_5d), color: "#94a3b8", x: center + 12 }
+        { value: Number(event.realized_5d), color: "#2457d6", x: center - 12 },
+        { value: Number(event.expected_5d), color: "#bd8c25", x: center + 12 }
       ].forEach((bar) => {
         const yy = y(bar.value);
         ctx.fillStyle = bar.color;
@@ -181,9 +213,9 @@ function drawBars(canvas, events, mode) {
     } else {
       const value = Number(event.abnormal_5d);
       const yy = y(value);
-      ctx.fillStyle = value >= 0 ? "#13805f" : "#b42318";
+      ctx.fillStyle = value >= 0 ? "#087a61" : "#b33a32";
       ctx.fillRect(center - 13, Math.min(yy, zero), 26, Math.abs(zero - yy));
-      ctx.fillStyle = "#334155";
+      ctx.fillStyle = "#4f5762";
       ctx.font = "11px Arial";
       ctx.fillText(fmtPpt(value), center - 22, yy + (value >= 0 ? -6 : 15));
     }
@@ -191,21 +223,21 @@ function drawBars(canvas, events, mode) {
     ctx.save();
     ctx.translate(center - 10, height - 14);
     ctx.rotate(-Math.PI / 5);
-    ctx.fillStyle = "#475569";
+    ctx.fillStyle = "#626b77";
     ctx.font = "11px Arial";
     ctx.fillText(event.quarter, 0, 0);
     ctx.restore();
   });
 
   if (mode === "realizedExpected") {
-    ctx.fillStyle = "#1d4ed8";
+    ctx.fillStyle = "#2457d6";
     ctx.fillRect(width - 178, 18, 10, 10);
-    ctx.fillStyle = "#334155";
+    ctx.fillStyle = "#4f5762";
     ctx.font = "12px Arial";
     ctx.fillText("Realized 5D", width - 162, 27);
-    ctx.fillStyle = "#94a3b8";
+    ctx.fillStyle = "#bd8c25";
     ctx.fillRect(width - 88, 18, 10, 10);
-    ctx.fillStyle = "#334155";
+    ctx.fillStyle = "#4f5762";
     ctx.fillText("Expected", width - 72, 27);
   }
 }
@@ -255,9 +287,9 @@ function drawPriceTimeline(canvas, prices, events) {
     return margin.top + ((max - value) / (max - min)) * plotH;
   }
 
-  ctx.strokeStyle = "#dbe3ef";
+  ctx.strokeStyle = "#e6e9ed";
   ctx.lineWidth = 1;
-  ctx.fillStyle = "#64748b";
+  ctx.fillStyle = "#707885";
   ctx.font = "12px Arial";
   for (let i = 0; i <= 4; i += 1) {
     const value = min + ((max - min) * i) / 4;
@@ -274,12 +306,25 @@ function drawPriceTimeline(canvas, prices, events) {
     const index = Math.round((prices.length - 1) * (i / Math.max(1, tickCount - 1)));
     const row = prices[index];
     const xx = x(row.date);
-    ctx.fillStyle = "#64748b";
+    ctx.fillStyle = "#707885";
     ctx.fillText(row.date.slice(0, 7), xx - 20, height - 22);
   }
 
-  ctx.strokeStyle = "#1d4ed8";
-  ctx.lineWidth = 2;
+  ctx.beginPath();
+  prices.forEach((row, index) => {
+    const xx = x(row.date);
+    const yy = y(row.close);
+    if (index === 0) ctx.moveTo(xx, yy);
+    else ctx.lineTo(xx, yy);
+  });
+  ctx.lineTo(x(prices[prices.length - 1].date), height - margin.bottom);
+  ctx.lineTo(x(prices[0].date), height - margin.bottom);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(36, 87, 214, 0.07)";
+  ctx.fill();
+
+  ctx.strokeStyle = "#2457d6";
+  ctx.lineWidth = 2.2;
   ctx.beginPath();
   prices.forEach((row, index) => {
     const xx = x(row.date);
@@ -301,13 +346,13 @@ function drawPriceTimeline(canvas, prices, events) {
   const laneLastX = laneY.map(() => -Infinity);
   const minLaneGap = Math.min(210, Math.max(125, plotW / Math.max(2, events.length - 1) * 0.85));
 
-  events.forEach((event) => {
+  events.forEach((event, eventIndex) => {
     const row = priceByDate.get(event.event_trading_date) || priceByDate.get(event.call_date);
     if (!row) return;
     const xx = x(row.date);
     const yy = y(row.close);
     const positive = Number(event.abnormal_5d) >= 0;
-    const color = positive ? "#13805f" : "#b42318";
+    const color = positive ? "#087a61" : "#b33a32";
     let laneIndex = 0;
     for (let i = 0; i < laneY.length; i += 1) {
       if (xx - laneLastX[i] >= minLaneGap) {
@@ -330,6 +375,8 @@ function drawPriceTimeline(canvas, prices, events) {
     ctx.arc(xx, yy, 5, 0, Math.PI * 2);
     ctx.fill();
 
+    const shouldLabel = width >= 720 || eventIndex >= events.length - 4;
+    if (!shouldLabel) return;
     const text = `${event.quarter}: ${event.chart_label || event.headline || "Earnings-call driver"}`;
     const maxTextWidth = Math.min(230, Math.max(160, plotW / 4));
     const boxX = Math.min(Math.max(xx - maxTextWidth / 2, margin.left), width - margin.right - maxTextWidth);
@@ -450,7 +497,7 @@ function buildReport(company, events, prices) {
       <h3>Analysis Report</h3>
       <p>
         From ${escapeHtml(fmtDate(start?.date))} to ${escapeHtml(fmtDate(end?.date))},
-        ${escapeHtml(company.displayName)} moved from ${escapeHtml(fmtPrice(start?.close))} to ${escapeHtml(fmtPrice(end?.close))},
+        ${escapeHtml(fmtCompanyName(company.displayName))} moved from ${escapeHtml(fmtPrice(start?.close))} to ${escapeHtml(fmtPrice(end?.close))},
         a total realized price change of ${totalReturn === null ? "--" : escapeHtml(fmtPct(totalReturn))}.
         ${escapeHtml(analysisWindowText)} The event-study sample has ${positiveEvents.length}
         positive and ${negativeEvents.length} negative 5-day abnormal reactions versus the benchmark.
@@ -460,30 +507,37 @@ function buildReport(company, events, prices) {
   `;
 }
 
-function renderEvent(event) {
+function renderEvent(event, expanded = false) {
   const isPositive = Number(event.abnormal_5d) >= 0;
   const transcriptDerived = ["transcript-event-extraction", "ai-transcript-derived"].includes(event.attribution_source) || String(event.attribution_source || "").startsWith("transcript-derived");
   const preliminary = event.attribution_source === "transcript-event-extraction";
   const source = event.transcript_url
-    ? `<a href="${escapeHtml(event.transcript_url)}" target="_blank" rel="noopener noreferrer">transcript</a>`
+    ? `<a href="${escapeHtml(event.transcript_url)}" target="_blank" rel="noopener noreferrer">${transcriptDerived ? "Open transcript source" : "Find supporting transcript"}</a>`
     : "";
   return `
-    <article class="event ${isPositive ? "positive" : "negative"}">
-      <h4>${escapeHtml(event.quarter)} | ${escapeHtml(event.headline)}</h4>
-      <span class="pill ${isPositive ? "good" : "bad"}">Abnormal 5D: ${escapeHtml(fmtPpt(event.abnormal_5d))}</span>
-      <span class="pill">Realized: ${escapeHtml(fmtPct(event.realized_5d))}</span>
-      <span class="pill">Expected: ${escapeHtml(fmtPct(event.expected_5d))}</span>
-      <span class="pill">Realized price: ${escapeHtml(fmtPrice(event.realized_price_5d))}</span>
-      <span class="pill">Expected price: ${escapeHtml(fmtPrice(event.expected_price_5d))}</span>
-      <span class="pill">Call date: ${escapeHtml(event.call_date)}</span>
-      ${event.event_type ? `<span class="pill">Event type: ${escapeHtml(event.event_type)}</span>` : ""}
-      ${event.confidence ? `<span class="pill">Confidence: ${escapeHtml(event.confidence)}</span>` : ""}
-      <p><strong>${transcriptDerived ? (preliminary ? "Primary transcript event:" : "Driver:") : "Measured mismatch:"}</strong> ${escapeHtml(event.catalyst || event.driver_summary)}</p>
-      <p><strong>Interpretation:</strong> ${escapeHtml(event.interpretation)}</p>
-      <p><strong>${transcriptDerived ? "Transcript evidence:" : "Available evidence:"}</strong></p>
-      <ul>${(event.evidence_points || []).map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>
-      <p>${source}</p>
-    </article>
+    <details class="event ${isPositive ? "positive" : "negative"}"${expanded ? " open" : ""}>
+      <summary>
+        <span class="event-quarter">${escapeHtml(event.quarter)}<br>${escapeHtml(fmtDate(event.call_date))}</span>
+        <span class="event-title">${escapeHtml(event.headline)}</span>
+        <span class="event-return ${isPositive ? "good" : "bad"}">${escapeHtml(fmtPpt(event.abnormal_5d))}</span>
+      </summary>
+      <div class="event-body">
+        <div class="pill-row">
+          <span class="pill ${isPositive ? "good" : "bad"}">Abnormal 5D ${escapeHtml(fmtPpt(event.abnormal_5d))}</span>
+          <span class="pill">Realized ${escapeHtml(fmtPct(event.realized_5d))}</span>
+          <span class="pill">Expected ${escapeHtml(fmtPct(event.expected_5d))}</span>
+          <span class="pill">Realized price ${escapeHtml(fmtPrice(event.realized_price_5d))}</span>
+          <span class="pill">Expected price ${escapeHtml(fmtPrice(event.expected_price_5d))}</span>
+          ${event.event_type ? `<span class="pill">${escapeHtml(event.event_type)}</span>` : ""}
+          ${event.confidence ? `<span class="pill">${escapeHtml(event.confidence)} confidence</span>` : ""}
+        </div>
+        <p><strong>${transcriptDerived ? (preliminary ? "Primary transcript event:" : "Driver:") : "Measured mismatch:"}</strong> ${escapeHtml(event.catalyst || event.driver_summary)}</p>
+        <p><strong>Interpretation:</strong> ${escapeHtml(event.interpretation)}</p>
+        <p class="event-evidence-label">${transcriptDerived ? "Transcript evidence" : "Available evidence"}</p>
+        <ul>${(event.evidence_points || []).map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>
+        ${source ? `<p>${source}</p>` : ""}
+      </div>
+    </details>
   `;
 }
 
@@ -508,8 +562,13 @@ function renderCompanyWithoutCalls(result) {
   const warnings = company.dataWarnings || [];
   $("analysis-root").innerHTML = `
     <section class="analysis-header">
-      <h2>${escapeHtml(company.displayName)}</h2>
-      <p>${escapeHtml(company.ticker)} | Live company and market data found</p>
+      <div class="company-heading">
+        <div>
+          <h2>${escapeHtml(fmtCompanyName(company.displayName))}</h2>
+          <p>${escapeHtml(company.ticker)} · Live company and market data found</p>
+        </div>
+        <span class="live-badge">Live data</span>
+      </div>
       <div class="summary-grid">
         <div class="metric"><span>Completed calls found</span><strong>0</strong></div>
         <div class="metric"><span>Price observations</span><strong>${prices.length}</strong></div>
@@ -518,12 +577,7 @@ function renderCompanyWithoutCalls(result) {
       </div>
     </section>
 
-    ${warnings.length ? `
-      <section class="notice warning">
-        <strong>Live data note.</strong>
-        <span>${warnings.map(escapeHtml).join(" ")}</span>
-      </section>
-    ` : ""}
+    ${renderDataQuality(warnings)}
 
     <section class="card">
       <div class="section-title-row">
@@ -558,28 +612,35 @@ function renderCompany(result) {
       : company.attributionMode === "transcript-derived"
         ? "Curated transcript drivers"
         : "Price-only";
+  const latestGap = Number(latest?.abnormal_5d || 0);
+  const latestGapClass = latestGap >= 0 ? "good" : "bad";
 
   const prices = currentPrices || [];
   $("analysis-root").innerHTML = `
     <section class="analysis-header">
-      <h2>${escapeHtml(company.displayName)}</h2>
-      <p>${escapeHtml(company.ticker)} | ${escapeHtml(eventLabel)} | Latest call: ${escapeHtml(latest?.quarter || "--")} (${escapeHtml(latest?.call_date || "--")})</p>
+      <div class="company-heading">
+        <div>
+          <h2>${escapeHtml(fmtCompanyName(company.displayName))}</h2>
+          <p>${escapeHtml(company.ticker)} · Latest call ${escapeHtml(latest?.quarter || "--")} · ${escapeHtml(fmtDate(latest?.call_date))}</p>
+        </div>
+        <span class="live-badge">Live analysis</span>
+      </div>
       <div class="summary-grid">
-        <div class="metric"><span>Analyzed events</span><strong>${analysisEventCount}</strong></div>
-        <div class="metric"><span>Analysis window</span><strong>${escapeHtml(windowLabel)}</strong></div>
-        <div class="metric"><span>Driver mode</span><strong>${escapeHtml(attributionLabel)}</strong></div>
-        <div class="metric"><span>Positive 5D abnormal</span><strong>${summary.positiveCount}</strong></div>
-        <div class="metric"><span>Negative 5D abnormal</span><strong>${summary.negativeCount}</strong></div>
-        <div class="metric"><span>Avg abnormal 5D</span><strong>${escapeHtml(fmtPpt(summary.averageAbnormal5d))}</strong></div>
+        <div class="metric"><span>Latest realized 5D</span><strong>${escapeHtml(fmtPct(latest?.realized_5d))}</strong></div>
+        <div class="metric"><span>Benchmark expected</span><strong>${escapeHtml(fmtPct(latest?.expected_5d))}</strong></div>
+        <div class="metric"><span>Latest abnormal gap</span><strong class="${latestGapClass}">${escapeHtml(fmtPpt(latestGap))}</strong></div>
+        <div class="metric"><span>Analyzed calls</span><strong>${analysisEventCount}</strong></div>
+      </div>
+      <div class="research-meta">
+        <span><strong>Window</strong> ${escapeHtml(windowLabel)}</span>
+        <span><strong>Driver coverage</strong> ${escapeHtml(attributionLabel)}</span>
+        <span><strong>Event balance</strong> ${summary.positiveCount} positive / ${summary.negativeCount} negative</span>
+        <span><strong>Average gap</strong> ${escapeHtml(fmtPpt(summary.averageAbnormal5d))}</span>
+        <span>${escapeHtml(eventLabel)}</span>
       </div>
     </section>
 
-    ${warnings.length ? `
-      <section class="notice warning">
-        <strong>Data note.</strong>
-        <span>${warnings.map(escapeHtml).join(" ")}</span>
-      </section>
-    ` : ""}
+    ${renderDataQuality(warnings)}
 
     <section class="card">
       <div class="section-title-row">
@@ -605,8 +666,11 @@ function renderCompany(result) {
     </section>
 
     <section class="card">
-      <h3>Earnings Call Analysis</h3>
-      <div class="event-list">${[...events].reverse().map(renderEvent).join("")}</div>
+      <div class="section-title-row">
+        <h3>Earnings Call Analysis</h3>
+        <span>Newest call first · expand a row for evidence</span>
+      </div>
+      <div class="event-list">${[...events].reverse().map((event, index) => renderEvent(event, index === 0)).join("")}</div>
     </section>
 
     ${buildReport(company, events, prices)}
@@ -627,22 +691,28 @@ async function runSearch(query) {
     setStatus("Missing input.", "Type a company name or ticker first.");
     return;
   }
+  setBusy(true);
   setStatus("Generating.", `Running earnings-call analysis for ${q}...`);
-  const result = await getAnalysis(q);
-  if (!result.ok || !result.company) {
-    setStatus("Live search failed.", result.message || "No listed security could be resolved from live sources.");
-    renderUnsupported(result);
-    return;
+  renderLoading(q);
+  try {
+    const result = await getAnalysis(q);
+    if (!result.ok || !result.company) {
+      setStatus("Live search failed.", result.message || "No listed security could be resolved from live sources.");
+      renderUnsupported(result);
+      return;
+    }
+    currentResult = result;
+    currentPrices = await getPriceSeries(result.company);
+    if (!(result.company.events || []).length) {
+      setStatus("Company found.", `Found live market data for ${fmtCompanyName(result.company.displayName)}; no completed earnings-call event could be matched yet.`);
+      renderCompanyWithoutCalls(result);
+      return;
+    }
+    setStatus("Analysis ready.", `Generated event-study analysis for ${fmtCompanyName(result.company.displayName)}.`);
+    renderCompany(result);
+  } finally {
+    setBusy(false);
   }
-  currentResult = result;
-  currentPrices = await getPriceSeries(result.company);
-  if (!(result.company.events || []).length) {
-    setStatus("Company found.", `Found live market data for ${result.company.displayName}; no completed earnings-call event could be matched yet.`);
-    renderCompanyWithoutCalls(result);
-    return;
-  }
-  setStatus("Analysis ready.", `Generated event-study analysis for ${result.company.displayName}.`);
-  renderCompany(result);
 }
 
 function init() {
