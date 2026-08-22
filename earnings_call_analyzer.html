@@ -18,6 +18,7 @@
         </div>
       </div>
       <form class="search-panel" id="search-form" role="search">
+        <i class="search-icon" data-lucide="search" aria-hidden="true"></i>
         <input
           id="stock-query"
           type="search"
@@ -28,6 +29,22 @@
         />
         <button id="search-button" type="submit" aria-label="Search and generate analysis">Search</button>
       </form>
+      <div class="research-flow" aria-label="Analysis workflow">
+        <div class="flow-step">
+          <span class="flow-icon"><i data-lucide="chart-no-axes-combined" aria-hidden="true"></i></span>
+          <span><strong>Price reaction</strong><small>Event-window returns</small></span>
+        </div>
+        <span class="flow-line" aria-hidden="true"></span>
+        <div class="flow-step">
+          <span class="flow-icon call"><i data-lucide="messages-square" aria-hidden="true"></i></span>
+          <span><strong>Call evidence</strong><small>Transcript events</small></span>
+        </div>
+        <span class="flow-line" aria-hidden="true"></span>
+        <div class="flow-step">
+          <span class="flow-icon gap"><i data-lucide="scale" aria-hidden="true"></i></span>
+          <span><strong>Expectation gap</strong><small>Realized vs expected</small></span>
+        </div>
+      </div>
     </header>
 
     <main class="page">
@@ -39,6 +56,7 @@
       <section id="analysis-root"></section>
     </main>
 
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
     <script src="earnings_call_analyzer.js"></script>
   </body>
 </html>

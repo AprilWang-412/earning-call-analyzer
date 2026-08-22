@@ -717,6 +717,7 @@ async function runSearch(query) {
 
 function init() {
   $("analysis-root").innerHTML = "";
+  if (window.lucide) window.lucide.createIcons();
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
     runSearch();

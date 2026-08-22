@@ -79,7 +79,8 @@ h1 {
 
 .search-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
   margin-top: 20px;
   padding: 7px;
@@ -87,6 +88,14 @@ h1 {
   border-radius: 8px;
   background: var(--paper);
   box-shadow: var(--shadow);
+}
+
+.search-icon {
+  width: 18px;
+  height: 18px;
+  margin-left: 8px;
+  color: #7d8590;
+  stroke-width: 2;
 }
 
 .search-panel:focus-within {
@@ -127,6 +136,77 @@ h1 {
 .search-panel button:hover { background: #1746bc; }
 .search-panel button:active { transform: translateY(1px); }
 .search-panel button:disabled { cursor: wait; opacity: 0.72; }
+
+.research-flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr) 56px minmax(0, 1fr);
+  align-items: center;
+  max-width: 820px;
+  margin: 22px auto 0;
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.flow-icon {
+  display: grid;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid #cfd8ef;
+  border-radius: 6px;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.flow-icon.call {
+  border-color: #c9e3dc;
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.flow-icon.gap {
+  border-color: #ead9aa;
+  background: var(--amber-soft);
+  color: #95660b;
+}
+
+.flow-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+.flow-step strong,
+.flow-step small {
+  display: block;
+  white-space: nowrap;
+}
+
+.flow-step strong {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.25;
+  font-weight: 750;
+}
+
+.flow-step small {
+  margin-top: 3px;
+  color: #858d98;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.flow-line {
+  height: 1px;
+  background: var(--line-strong);
+}
 
 .page { padding: 0 0 64px; }
 
@@ -495,8 +575,18 @@ canvas {
   .brand-mark { flex-basis: 38px; width: 38px; height: 38px; font-size: 11px; }
   h1 { font-size: 29px; }
   .subtitle { font-size: 13px; }
-  .search-panel { grid-template-columns: minmax(0, 1fr) 84px; }
+  .search-panel { grid-template-columns: 26px minmax(0, 1fr) 84px; }
   .search-panel button { min-width: 0; padding: 0 12px; }
+  .research-flow {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 16px;
+  }
+  .flow-step { display: grid; justify-items: center; gap: 6px; text-align: center; }
+  .flow-icon { flex-basis: 34px; width: 34px; height: 34px; }
+  .flow-step strong { font-size: 10px; white-space: normal; }
+  .flow-step small { display: none; }
+  .flow-line { display: none; }
   .notice { align-items: flex-start; }
   .loading-steps { grid-template-columns: 1fr; }
   .company-heading { display: block; padding: 20px; }
