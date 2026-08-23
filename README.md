@@ -25,4 +25,4 @@ Open [http://localhost:4173/earnings_call_analyzer.html](http://localhost:4173/e
 
 Public web coverage is not identical for every exchange. Paywalled, licensed, blocked or unpublished transcripts cannot be legally or technically treated as public data; when transcript evidence cannot be verified, the interface reports that limitation instead of inventing a driver or substituting bundled sample data.
 
-Set `OPENAI_API_KEY` before starting the server to enable AI-assisted driver writing. Without it, the application uses its deterministic transcript-event extraction pipeline.
+Production deployments use Vercel AI Gateway with OIDC authentication for AI-assisted driver writing, so no provider API key is required. Enable AI Gateway for the Vercel project. Local development can use `AI_GATEWAY_API_KEY`; without gateway credentials, the application uses its deterministic transcript-event extraction pipeline.

@@ -57,29 +57,20 @@ async function fetchText(url) {
   return requestText(url, { ...HTTP_HEADERS, "Accept": "text/html,text/plain,*/*" });
 }
 
-async function fetchOpenAiJson(prompt) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-      input: prompt,
-      temperature: 0.2
-    })
-  });
-  if (!response.ok) return null;
-  const data = await response.json();
-  const text = data.output_text || data.output?.flatMap((item) => item.content || []).map((part) => part.text || "").join("\n") || "";
-  const jsonText = text.match(/\{[\s\S]*\}/)?.[0];
-  if (!jsonText) return null;
+async function fetchAiJson(prompt) {
   try {
+    const { generateText } = await import("ai");
+    const result = await generateText({
+      model: process.env.AI_GATEWAY_MODEL || "openai/gpt-5.4-mini",
+      prompt,
+      temperature: 0.2
+    });
+    const text = result.text || "";
+    const jsonText = text.match(/\{[\s\S]*\}/)?.[0];
+    if (!jsonText) return null;
     return JSON.parse(jsonText);
   } catch (error) {
+    console.warn("AI Gateway extraction failed; using transcript rules.", error?.message || error);
     return null;
   }
 }
@@ -1023,7 +1014,7 @@ Fallback driver: ${fallbackCatalyst}
 Transcript evidence:
 ${evidence.map((point, index) => `${index + 1}. ${point}`).join("\n")}
 `;
-  const result = await fetchOpenAiJson(prompt);
+  const result = await fetchAiJson(prompt);
   if (!result?.driver) return null;
   return {
     driver: String(result.driver).slice(0, 180),
