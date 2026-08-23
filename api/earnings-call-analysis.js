@@ -61,7 +61,7 @@ async function fetchAiJson(prompt) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) return null;
   try {
-    const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const model = process.env.GEMINI_MODEL || "gemini-3.7-flash";
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
