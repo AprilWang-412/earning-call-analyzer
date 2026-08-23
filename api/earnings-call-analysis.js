@@ -62,20 +62,32 @@ async function fetchAiJson(prompt) {
   if (!apiKey) return null;
   try {
     const model = process.env.GEMINI_MODEL || "gemini-3.7-flash";
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 4096,
-          responseMimeType: "application/json"
-        }
-      })
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const body = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 4096,
+        responseMimeType: "application/json"
+      }
     });
-    if (!response.ok) {
-      throw new Error(`Gemini API returned HTTP ${response.status}.`);
+    let response = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body
+      });
+      if (response.ok) break;
+      const retryable = [429, 500, 502, 503, 504].includes(response.status);
+      if (!retryable || attempt === 2) {
+        throw new Error(`Gemini API returned HTTP ${response.status}.`);
+      }
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const delayMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 5000)
+        : 900 * (2 ** attempt);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     const data = await response.json();
     const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
