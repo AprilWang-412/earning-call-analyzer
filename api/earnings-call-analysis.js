@@ -58,19 +58,31 @@ async function fetchText(url) {
 }
 
 async function fetchAiJson(prompt) {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey) return null;
   try {
-    const { generateText } = await import("ai");
-    const result = await generateText({
-      model: process.env.AI_GATEWAY_MODEL || "openai/gpt-5.4-mini",
-      prompt,
-      temperature: 0.2
+    const model = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: "application/json"
+        }
+      })
     });
-    const text = result.text || "";
+    if (!response.ok) {
+      throw new Error(`Gemini API returned HTTP ${response.status}.`);
+    }
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
     const jsonText = text.match(/\{[\s\S]*\}/)?.[0];
     if (!jsonText) return null;
     return JSON.parse(jsonText);
   } catch (error) {
-    console.warn("AI Gateway extraction failed; using transcript rules.", error?.message || error);
+    console.warn("Gemini extraction failed; using transcript rules.", error?.message || error);
     return null;
   }
 }

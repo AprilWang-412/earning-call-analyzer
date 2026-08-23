@@ -9,8 +9,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {
-    "ai": "6.0.264"
   }
 }
