@@ -61,7 +61,7 @@ async function fetchAiJson(prompt) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) return null;
   try {
-    const model = process.env.GEMINI_MODEL || "gemini-3.7-flash";
+    const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -69,6 +69,7 @@ async function fetchAiJson(prompt) {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.2,
+          maxOutputTokens: 4096,
           responseMimeType: "application/json"
         }
       })
@@ -1000,12 +1001,13 @@ function catalystCategory(catalyst) {
   return "call-specific event";
 }
 
-async function buildAiTranscriptDriver({ earning, abnormal5d, evidence, fallbackCatalyst }) {
+async function buildAiTranscriptDrivers(contexts) {
+  if (!contexts.length) return new Map();
   const prompt = `
 You are producing an earnings-call event-study attribution in the style of a formal equity research report.
 
 Task:
-Given one earnings-call event, write a concise event driver that explains WHY realized return differed from benchmark-expected return.
+For each earnings-call event below, write a concise event driver that may explain why realized return differed from the market benchmark.
 
 Rules:
 - Driver must be a short analyst-style event description, not a transcript quote.
@@ -1015,27 +1017,33 @@ Rules:
 - Distinguish what happened in the reported quarter from what management guided for the next period.
 - Do not claim causation more strongly than the transcript and event-window evidence allow.
 - Use only the evidence provided.
-- Return only JSON with keys: driver, interpretation, confidence.
+- Return every supplied id exactly once.
+- Return only JSON in this form: {"drivers":[{"id":0,"driver":"...","interpretation":"...","confidence":"high|medium|low"}]}.
 
-Event:
-Quarter: ${earning.fiscalQuarterEnd || earning.reportedDate}
-Call date: ${earning.reportedDate}
-5D abnormal return: ${ppt(abnormal5d)}
-Fallback driver: ${fallbackCatalyst}
-
+Events:
+${contexts.map((context) => `
+ID: ${context.id}
+Quarter: ${context.quarter}
+Call date: ${context.callDate}
+5D abnormal return: ${ppt(context.abnormal5d)}
+Fallback driver: ${context.fallbackCatalyst}
 Transcript evidence:
-${evidence.map((point, index) => `${index + 1}. ${point}`).join("\n")}
+${context.evidence.map((point, index) => `${index + 1}. ${point}`).join("\n")}
+`).join("\n")}
 `;
   const result = await fetchAiJson(prompt);
-  if (!result?.driver) return null;
-  return {
-    driver: String(result.driver).slice(0, 180),
-    interpretation: String(result.interpretation || "").slice(0, 500),
-    confidence: String(result.confidence || "medium").toLowerCase()
-  };
+  const drivers = Array.isArray(result?.drivers) ? result.drivers : [];
+  return new Map(drivers.filter((driver) => Number.isInteger(Number(driver.id)) && driver.driver).map((driver) => [
+    Number(driver.id),
+    {
+      driver: String(driver.driver).slice(0, 180),
+      interpretation: String(driver.interpretation || "").slice(0, 500),
+      confidence: String(driver.confidence || "medium").toLowerCase()
+    }
+  ]));
 }
 
-async function buildTranscriptDriver(earning, abnormal5d, transcript) {
+function buildTranscriptDriver(earning, abnormal5d, transcript) {
   if (!transcript) return null;
   const sentences = sentenceSplit(transcript.text);
   const candidates = buildEventCandidates(sentences, abnormal5d);
@@ -1043,8 +1051,7 @@ async function buildTranscriptDriver(earning, abnormal5d, transcript) {
   const evidence = selected.map((item) => item.sentence);
   if (!evidence.length) return null;
   const catalyst = concreteCatalyst(evidence, abnormal5d);
-  const aiDriver = await buildAiTranscriptDriver({ earning, abnormal5d, evidence, fallbackCatalyst: catalyst });
-  const finalCatalyst = (aiDriver?.driver || catalyst).replace(/[.]+$/, "");
+  const finalCatalyst = catalyst.replace(/[.]+$/, "");
   if (isWeakCatalyst(finalCatalyst)) return null;
   const category = catalystCategory(catalyst);
   const primary = selected[0];
@@ -1055,7 +1062,7 @@ async function buildTranscriptDriver(earning, abnormal5d, transcript) {
     headline: finalCatalyst,
     label,
     summary: finalCatalyst,
-    interpretation: aiDriver?.interpretation || `The ${gapDirection} realized-vs-expected gap is consistent with investors repricing this ${category}: ${finalCatalyst}. This is transcript-supported event attribution, but it is not proof that the event was the only cause of the 5-day move.`,
+    interpretation: `The ${gapDirection} realized-vs-benchmark gap is consistent with investors repricing this ${category}: ${finalCatalyst}. This is transcript-supported event attribution, but it is not proof that the event was the only cause of the 5-day move.`,
     evidence_points: evidence,
     catalyst: finalCatalyst,
     catalyst_category: category,
@@ -1063,10 +1070,18 @@ async function buildTranscriptDriver(earning, abnormal5d, transcript) {
     transcript_url: transcript.url,
     transcript_title: transcript.title,
     transcript_date: transcript.date,
-    attribution_source: aiDriver ? "ai-transcript-derived" : "transcript-event-extraction",
-    confidence: aiDriver?.confidence || ruleConfidence,
+    attribution_source: "transcript-event-extraction",
+    confidence: ruleConfidence,
     event_topics: primary.topics,
-    event_score: primary.score
+    event_score: primary.score,
+    ai_context: {
+      quarter: earning.fiscalQuarterEnd || earning.reportedDate,
+      callDate: earning.reportedDate,
+      abnormal5d,
+      fallbackCatalyst: catalyst,
+      evidence,
+      primarySentence: primary.sentence
+    }
   };
 }
 
@@ -1149,7 +1164,7 @@ async function buildLiveAnalysis(query) {
     .filter((event) => event.reportedDate >= prices[0]?.date && event.reportedDate <= prices[prices.length - 1]?.date)
     .sort((a, b) => new Date(a.reportedDate) - new Date(b.reportedDate));
 
-  const events = (await Promise.all(recentEarnings.map(async (earning, index) => {
+  let events = (await Promise.all(recentEarnings.map(async (earning, index) => {
     const realized1d = eventReturn(prices, earning.reportedDate, 1);
     const realized3d = eventReturn(prices, earning.reportedDate, 3);
     const realized5d = eventReturn(prices, earning.reportedDate, 5);
@@ -1162,7 +1177,7 @@ async function buildLiveAnalysis(query) {
     const exp5 = expected5d?.value || 0;
     const abnormal5d = realized5d.value - exp5;
     const transcript = matchTranscriptForEvent(transcriptCandidates, earning);
-    const transcriptDriver = await buildTranscriptDriver(earning, abnormal5d, transcript);
+    const transcriptDriver = buildTranscriptDriver(earning, abnormal5d, transcript);
     const driver = transcriptDriver || describeLiveDriver(earning, abnormal5d);
     const evidencePoints = transcriptDriver?.evidence_points || [
       `Reported EPS: ${Number.isFinite(earning.reportedEPS) ? earning.reportedEPS : "n/a"} vs consensus ${Number.isFinite(earning.estimatedEPS) ? earning.estimatedEPS : "n/a"}.`,
@@ -1205,9 +1220,34 @@ async function buildLiveAnalysis(query) {
       transcript_date: transcriptDriver?.transcript_date || null,
       attribution_source: transcriptDriver?.attribution_source || "price-only",
       confidence: transcriptDriver?.confidence || (earning.dateConfidence === "reported" ? "medium" : "low"),
-      date_confidence: earning.dateConfidence
+      date_confidence: earning.dateConfidence,
+      _event_id: index,
+      _ai_context: transcriptDriver?.ai_context || null
     };
   }))).filter(Boolean);
+
+  const aiContexts = events
+    .filter((event) => event._ai_context)
+    .map((event) => ({ id: event._event_id, ...event._ai_context }));
+  const aiDrivers = await buildAiTranscriptDrivers(aiContexts);
+  events = events.map((event) => {
+    const aiDriver = aiDrivers.get(event._event_id);
+    const context = event._ai_context;
+    const { _event_id, _ai_context, ...cleanEvent } = event;
+    if (!aiDriver || isWeakCatalyst(aiDriver.driver)) return cleanEvent;
+    const driver = aiDriver.driver.replace(/[.]+$/, "");
+    return {
+      ...cleanEvent,
+      headline: driver,
+      chart_label: chartDriverLabel(driver, context.primarySentence),
+      driver_summary: driver,
+      interpretation: aiDriver.interpretation || cleanEvent.interpretation,
+      catalyst: driver,
+      catalyst_category: catalystCategory(driver),
+      attribution_source: "ai-transcript-derived",
+      confidence: aiDriver.confidence
+    };
+  });
 
   const dataWarnings = [];
   const transcriptDerivedCount = events.filter((event) => ["transcript-event-extraction", "ai-transcript-derived"].includes(event.attribution_source) || String(event.attribution_source || "").startsWith("transcript-derived")).length;
